@@ -5,7 +5,6 @@ import aws_cdk as cdk
 
 from cdk_lambda.cdk_lambda_stack import CdkProjectsStack
 
-
 app = cdk.App()
 CdkProjectsStack(app, "CdkProjectsStack",
                  # If you don't specify 'env', this stack will be environment-agnostic.
