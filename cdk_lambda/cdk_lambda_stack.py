@@ -73,7 +73,77 @@ class CdkProjectsStack(Stack):
             role=api_role,
             api_definition=apigateway.APIDefinition.from_inline(api_spec)
         )
+                # This enables the API to be called from browser with basic authentication
+        apigateway.GatewayResponse(
+            self,
+            "MyGatewayResponse",
+            type=apigateway.ResponseType.UNAUTHORIZED,
+            rest_api=api,
+            # the properties below are optional
+            response_headers={
+                "WWW-Authenticate": "'Basic'",
+                "Access-Control-Allow-Headers": "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'",  # noqa: E501
+                "Access-Control-Allow-Methods": "'GET,OPTIONS'",
+                "Access-Control-Allow-Origin": "'*'",
+            },
+            status_code="401",
+        )
 
         deployment = apigateway.Deployment(self, "deployment", api=api)
 
         apigateway.Stage(self, "apistage", deployment=deployment, stage_name=API_STAGE)
+        
+        glue_role = iam.Role(
+            self,
+            f"AWSGlueServiceRole_{STACK_NAME}",
+            assumed_by=iam.ServicePrincipal("glue.amazonaws.com"),
+            managed_policies=[
+                iam.ManagedPolicy.from_managed_policy_arn(
+                    id=f"{STACK_NAME}_glue_s3",
+                    scope=self,
+                    managed_policy_arn="arn:aws:iam::aws:policy/AmazonS3FullAccess",
+                ),
+                iam.ManagedPolicy.from_managed_policy_arn(
+                    id=f"{STACK_NAME}_glue_cloudwatch",
+                    scope=self,
+                    managed_policy_arn="arn:aws:iam::aws:policy/CloudWatchLogsFullAccess",
+                ),
+                iam.ManagedPolicy.from_managed_policy_arn(
+                    id=f"{STACK_NAME}_glue_database",
+                    scope=self,
+                    managed_policy_arn=f"arn:aws:iam::{AWS_ACCOUNT}:policy/glue-database",
+                ),
+            ],
+        )
+        glue_role.add_managed_policy(
+            iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AWSGlueServiceRole")
+        )
+        glue_trigger = glue.CfnTrigger(
+            self,
+            "glue-daily-trigger",
+            name=f"{STACK_NAME}_s3_logs_trigger",
+            schedule="cron(0 12 * * ? *)",  # 12 am every day
+            type="SCHEDULED",
+            actions=[{"jobName": "glue_crawler-daily"}],
+            start_on_creation=True,
+        )
+        database_name = f'{STACK_NAME.replace("_", "").replace("-", "")}_{DATABASE_NAME}'
+        glue_crawler = glue.CfnCrawler(
+            self,
+            f"{STACK_NAME}_{CRAWLER_NAME}",
+            name=f"{STACK_NAME}_{CRAWLER_NAME}",
+            database_name=database_name,
+            role=glue_role.role_arn,
+            schedule=glue.CfnCrawler.ScheduleProperty(schedule_expression="cron(0 12 * * ? *)"),
+            targets={
+                "s3Targets": [{"path": S3_TARGET_PATH}],
+            },
+            recrawl_policy=glue.CfnCrawler.RecrawlPolicyProperty(
+                recrawl_behavior="CRAWL_NEW_FOLDERS_ONLY",
+            ),
+            schema_change_policy=glue.CfnCrawler.SchemaChangePolicyProperty(
+                delete_behavior="LOG", update_behavior="LOG"
+            ),
+        )
+        glue_trigger.add_depends_on(glue_crawler)
+
